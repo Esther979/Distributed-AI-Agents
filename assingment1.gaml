@@ -157,7 +157,7 @@ species guest skills: [moving] {
     {
     	ask target
     	{
-    		string getFood <- myself.name;
+    		string getFood <- myself.guestName;
     		if(sellsFood = true)
     		{
     			myself.hunger <- 100.0;
