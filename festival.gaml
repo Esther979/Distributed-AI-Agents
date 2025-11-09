@@ -1,8 +1,8 @@
 /**
-* Name: guest
+* Name: festival
 * Based on the internal empty template. 
 * Author: esther
-* Tags: 
+* Tags: Basic interaction in festival
 */
 
 
