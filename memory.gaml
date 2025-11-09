@@ -1,12 +1,12 @@
 /**
-* Name: festival
-* Based on the internal empty template. 
-* Author: xiao
-* Description: Basic task
+* Name: memory
+* Based on the assignment1 basic
+* Author: esther
+* Description: Challenge 1: Memory of Agents - Small Brain
 */
 
 
-model festival
+model memory
 
 /* Insert your model definition here */
 
@@ -54,6 +54,13 @@ species guest skills: [moving] {
 	float thirst <- 100.0;
 	string guestName <- "Undefined";
 	
+	//2.1 Memory and distance
+	list<stores> memory <- [];     // stores remembered
+	float totalDistance <- 0.0;    // accumulated distance traveled
+	float explorationProbability <- 0.3; // 30% chance to discover new place instead of memory
+	point last_location <- nil;    // used for distance tracking
+	
+	
 	// Used to store the long-distance target for wandering
 	point randomDestination <- nil;
 	
@@ -69,6 +76,14 @@ species guest skills: [moving] {
 		draw circle(2) at: location color: color;
 	}
     
+    //2.2 Remember distance
+    reflex trackDistance {
+	    if last_location != nil {
+	        totalDistance <- totalDistance + (location distance_to last_location);
+	    }
+	    last_location <- location;
+	}
+	
     /* Decrements hunger/thirst level randomly each time. 
      * If below 50, asks info center for the nearest store, 
      * prioritizing the lower value (to handle cases where both are below 50). */
@@ -78,44 +93,38 @@ species guest skills: [moving] {
     	thirst <- thirst-rnd(thirstlevel);
     	
     	if(hunger < 50 or thirst < 50){
-    		string stateMessage <- guestName;
-            
-    		// Clear the random wandering target before setting a new target
-            randomDestination <- nil; 
-            
-    		if(hunger <= thirst)
-    		{
-    			stateMessage <- guestName + ' is hungry, ';
-    			
-    			ask one_of(infoCenter)
-    			{
+    		//2.3 Use memory to find stores
+    		bool useMemory <- (rnd(1.0) > explorationProbability);
 
-    				myself.target <- one_of(foodStore closest_to myself);
-    				myself.color <- #red;
+			// Select from memory if possible
+    		if(hunger <= thirst){ // Need food first
+    			if(useMemory and any(memory where (each.sellsFood))) {
+    				target <- first((memory where (each.sellsFood)) sort_by (each.location distance_to location));
+    				color <- #red;
+    			} else {
+    				ask one_of(infoCenter) {
+    					myself.target <- one_of(foodStore closest_to myself);
+    					myself.color <- #red;
+    				}
     			}
-    			
-    			if (target != nil) {
-					stateMessage <- stateMessage + ' heading to the nearest Food Store: ' + target.name;
-					write stateMessage;
-				}
     		}
-    		else
-    		{
-    			stateMessage <- guestName + ' is thirsty, ';
-    			
-    			ask one_of(infoCenter)
-    			{
-    				myself.target <- one_of(drinkStore closest_to myself);
-    				myself.color <- #blue;
+    		else { // Need drink first
+    			if(useMemory and any(memory where (each.sellsDrink))) {
+    				target <- first((memory where (each.sellsDrink)) sort_by (each.location distance_to location));
+    				color <- #blue;
+    			} else {
+    				ask one_of(infoCenter) {
+    					myself.target <- one_of(drinkStore closest_to myself);
+    					myself.color <- #blue;
+    				}
     			}
-    			
-    			if (target != nil) {
-					stateMessage <- stateMessage + ' heading to the nearest Drink Store: ' + target.name;
-					write stateMessage;
-				}
     		}
+
+    		randomDestination <- nil;
     	}
     }
+    
+	    
     
     // defalut state
     reflex normalState when: target = nil
@@ -139,29 +148,24 @@ species guest skills: [moving] {
     	do goto target: target.location speed: speed_guests;
     }
     
-    //arrived, set to default
-    reflex arrivedStore when: target != nil and location distance_to(target.location) < 2.5
-    {
-    	ask target
-    	{
-    		string getFood <- myself.name;
-    		if(sellsFood = true)
-    		{
+    //Add arrived stores into memory
+    reflex arrivedStore when: target != nil and location distance_to(target.location) < 2.5 {
+    	ask target {
+    		if(sellsFood) {
     			myself.hunger <- 100.0;
-    			myself.target <- nil;
-				myself.color <- #green;
-				getFood <- getFood + ' ate food at' + name;
     		}
-    		else if(sellsDrink = true)
-    		{
+    		if(sellsDrink) {
     			myself.thirst <- 100.0;
-    			myself.target <- nil;
-				myself.color <- #green;
-				getFood <- getFood + ' hade drink at' + name;
     		}
-    		write getFood;
+
+    		if(not (self in myself.memory)) {
+    			myself.memory <- myself.memory + self;
+    		}
+
+    		write myself.guestName + " visited " + name;
     	}
     	target <- nil;
+    	color <- #green;
     }
 }
     
@@ -234,5 +238,8 @@ experiment main type: gui
 			species drinkStore;
 			species infoCenter;
 		}
+		//compare distance
+		monitor "Average distance traveled" value: mean(guest collect (each.totalDistance));
+        monitor "Average memory size" value: mean(guest collect (length(each.memory)));
 	}
 }
