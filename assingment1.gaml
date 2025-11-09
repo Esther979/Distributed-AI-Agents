@@ -170,7 +170,7 @@ species guest skills: [moving] {
     			myself.thirst <- 100.0;
     			myself.target <- nil;
 				myself.color <- #green;
-				getFood <- getFood + ' hade drink at' + name;
+				getFood <- getFood + ' had drink at' + name;
     		}
     		write getFood;
     	}
