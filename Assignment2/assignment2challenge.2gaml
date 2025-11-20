@@ -1,0 +1,330 @@
+/**
+* Name: assignment2
+* Based on the internal empty template. 
+* Author: Chang
+* Tags: FIPA, Auctions
+*/
+
+model assignment2
+
+global {
+    int nb_bidders <- 10;
+    int nb_auctioneers <- 1;
+    
+    // Challenge 2: Switch between auction types
+    string auction_type <- "Dutch" among: ["Dutch", "English", "Sealed"]; 
+    
+    // Stats for comparison
+    float total_revenue <- 0.0;
+    float total_bidder_gain <- 0.0;
+
+    init {
+        create Bidder number: nb_bidders;
+        create Auctioneer number: nb_auctioneers;
+    }
+}
+
+species Bidder skills: [fipa] {
+    string agentName <- name;
+    float valuation <- 70.0 + rnd(50); // Range: 70 to 120
+    bool has_won <- false;
+
+    // Visual aspect
+    aspect default {
+        draw circle(3) color: has_won ? #gold : #blue;
+        if (has_won) {
+            draw "WINNER" color: #black size: 10 at: location + {0, 5};
+        }
+    }
+
+    // Reflective behavior to handle Call for Proposals (CFP)
+    reflex react_to_cfps when: !empty(cfps) and !has_won {
+        // Important: Read content to remove message from mailbox
+        loop incoming over: cfps {
+            list msg <- incoming.contents; 
+            // msg format: ["cfp", item_name, price]
+            
+            if (length(msg) >= 3 and msg[0] = "cfp") {
+                float offered_price <- float(msg[2]);
+                string item <- string(msg[1]);
+                
+                // --- Strategy based on Auction Type ---
+                
+                // Strategy for DUTCH: Wait until price drops below valuation
+                if (auction_type = "Dutch") {
+                    if (offered_price <= valuation) {
+                        do propose message: incoming contents: ["propose", name, offered_price];
+                        write name + " (Val: " + valuation + ") bids on Dutch at " + offered_price;
+                        break; // Stop processing others
+                    }
+                }
+                
+                // Strategy for ENGLISH: Bid if price is lower than valuation
+                else if (auction_type = "English") {
+                    if (offered_price <= valuation) {
+                        // In English, we propose to join the round
+                        do propose message: incoming contents: ["propose", name, offered_price];
+                         write name + " (Val: " + valuation + ") joins English round at " + offered_price;
+                    }
+                }
+                
+                // Strategy for SEALED: Bid my valuation (or slightly less)
+                else if (auction_type = "Sealed") {
+                    // In sealed, the offered_price in CFP might be 0 or irrelevant
+                    // We bid our true valuation
+                    do propose message: incoming contents: ["propose", name, valuation];
+                    write name + " (Val: " + valuation + ") submits sealed bid: " + valuation;
+                }
+            }
+        }
+    }
+
+    // Handle Acceptance
+    reflex on_accept when: !empty(accept_proposals) {
+        loop a over: accept_proposals {
+            list info <- a.contents;
+            // info format: ["accept", item_name, final_price]
+            if (length(info) >= 3 and info[0] = "accept") {
+                has_won <- true;
+                float pay_price <- float(info[2]);
+                float my_gain <- valuation - pay_price;
+                
+                // Update global stats for Challenge 2 comparison
+                total_bidder_gain <- total_bidder_gain + my_gain;
+                
+                write name + " WON " + info[1] + " | Paid: " + pay_price + " | Value: " + valuation + " | Gain: " + my_gain;
+            }
+        }
+    }
+
+    // Handle Rejection or Cancellation
+    reflex on_reject_or_inform when: !empty(reject_proposals) {
+        loop r over: reject_proposals {
+            // Just clear the mailbox
+            list dummy <- r.contents;
+        }
+    }
+    
+    reflex on_inform when: !empty(informs) {
+        loop m over: informs {
+            list info <- m.contents;
+            // Just clearing mailbox and logging
+            if (length(info) >= 1 and info[0] = "CANCELLED") {
+                // write name + " knows auction is cancelled.";
+            }
+        }
+    }
+}
+
+species Auctioneer skills: [fipa] {
+    string item_name <- "Rare_Item";
+    
+    // Auction parameters
+    float start_price <- 0.0;
+    float current_price <- 0.0;
+    float reserve_price <- 60.0;
+    float decrease_step <- 10.0; // For Dutch
+    float increase_step <- 5.0;  // For English
+    
+    // State variables
+    bool active <- false;
+    float last_action_time <- 0.0;
+    int step_interval <- 2; // ticks between actions
+    
+    // Helper for English Auction
+    list<agent> current_round_bidders <- [];
+    agent highest_bidder <- nil;
+    float highest_bid <- 0.0;
+
+    init {
+        // Randomize setup
+        reserve_price <- 60.0 + rnd(20);
+        
+        if (auction_type = "Dutch") {
+            start_price <- 200.0 + rnd(50); // Start High
+        } else if (auction_type = "English") {
+            start_price <- reserve_price;   // Start Low
+        } else {
+            start_price <- 0.0;             // Irrelevant for Sealed
+        }
+        
+        current_price <- start_price;
+        active <- false;
+    }
+
+    // --- START AUCTION ---
+    reflex launch_auction when: time = 1 and !active {
+        active <- true;
+        last_action_time <- time;
+        
+        write "------------------------------------------------";
+        write name + " starts " + auction_type + " auction for " + item_name;
+        
+        if (auction_type = "Sealed") {
+             // One shot CFP
+             do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'cfp' contents: ["cfp", item_name, 0.0];
+        } else {
+             // Broadcast initial price
+             write "Starting Price: " + current_price;
+             do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'cfp' contents: ["cfp", item_name, current_price];
+        }
+    }
+
+    // --- DUTCH AUCTION LOGIC ---
+    reflex process_dutch when: active and auction_type = "Dutch" and !empty(proposes) {
+        // First one to propose wins
+        message p <- proposes[0];
+        list info <- p.contents;
+        
+        // Accept the first one
+        float price_sold <- float(info[2]);
+        do accept_proposal message: p contents: ["accept", item_name, price_sold];
+        
+        // Update Stats
+        total_revenue <- total_revenue + price_sold;
+        
+        // Reject others (if any arrived same tick)
+        loop i from: 1 to: length(proposes) - 1 {
+            do reject_proposal message: proposes[i] contents: ["reject", item_name];
+        }
+        
+        write "Dutch Auction Ended. Winner: " + agent(p.sender).name + " Price: " + price_sold;
+        active <- false;
+    }
+
+    reflex decrease_dutch_price when: active and auction_type = "Dutch" and empty(proposes) and (time - last_action_time) >= step_interval {
+        current_price <- current_price - decrease_step;
+        last_action_time <- time;
+        
+        if (current_price < reserve_price) {
+            write "Price below reserve ("+reserve_price+"). Auction Cancelled.";
+            do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'inform' contents: ["CANCELLED"];
+            active <- false;
+        } else {
+            write "Lowering price to: " + current_price;
+            do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'cfp' contents: ["cfp", item_name, current_price];
+        }
+    }
+
+    // --- ENGLISH AUCTION LOGIC ---
+    // Collect bids for the current round
+    reflex process_english_round when: active and auction_type = "English" and !empty(proposes) {
+        // In English, receiving proposals means people are willing to pay current_price
+        // We store them and trigger a price increase
+        
+        current_round_bidders <- []; // Clear previous round list
+        loop p over: proposes {
+             add agent(p.sender) to: current_round_bidders;
+        }
+        
+        // If we have bidders, we pick one as the temporary winner (doesn't matter which, usually the last one is fine)
+        // In a real simulation, we just need to know *someone* is still in.
+        highest_bidder <- current_round_bidders[rnd(length(current_round_bidders)-1)];
+        highest_bid <- current_price;
+        
+        write string(length(current_round_bidders)) + " bidders accepted price " + string(current_price) + ". Increasing price...";
+        
+        // Increase price and start new round
+        current_price <- current_price + increase_step;
+        last_action_time <- time;
+        
+        // Reject these proposals technically (to close transaction), but invite them to next round
+        // In FIPA contract net, we usually keep conversation open, but here we simplify: 
+        // reject current proposal but send new CFP.
+        loop p over: proposes {
+            do reject_proposal message: p contents: ["continue"]; 
+        }
+        
+        do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'cfp' contents: ["cfp", item_name, current_price];
+    }
+    
+    // If nobody bids at current_price, sell to the winner of the *previous* price
+    reflex close_english when: active and auction_type = "English" and empty(proposes) and (time - last_action_time) >= step_interval {
+        if (highest_bidder != nil) {
+            // We have a winner from the previous round (price = current_price - increase_step)
+            write "No bids at " + current_price + ". Sold to " + highest_bidder.name + " for " + highest_bid;
+            
+            // We need to manually send an ACCEPT message to the winner (simulated)
+            // Note: In strict FIPA contract net, we should have kept the proposal open. 
+            // Here we simulate the 'accept' by sending an inform-like accept structure.
+            do start_conversation to: [highest_bidder] protocol: 'fipa-contract-net' performative: 'accept_proposal' contents: ["accept", item_name, highest_bid];
+            
+            total_revenue <- total_revenue + highest_bid;
+        } else {
+            write "No bids even at start price. Auction Cancelled.";
+            do start_conversation to: list(Bidder) protocol: 'fipa-contract-net' performative: 'inform' contents: ["CANCELLED"];
+        }
+        active <- false;
+    }
+
+    // --- SEALED BID LOGIC ---
+    reflex process_sealed when: active and auction_type = "Sealed" and (time - last_action_time) >= (step_interval * 2) {
+        // Wait a bit longer for all bids to arrive
+        if (empty(proposes)) {
+            write "No sealed bids received.";
+            active <- false;
+        } else {
+            write "Processing " + length(proposes) + " sealed bids...";
+            
+            message winning_msg <- nil;
+            float max_bid <- 0.0;
+            
+            // Find highest bid
+            loop p over: proposes {
+                list info <- p.contents;
+                // info: ["propose", name, price]
+                float bid_val <- float(info[2]);
+                
+                if (bid_val > max_bid) {
+                    max_bid <- bid_val;
+                    winning_msg <- p;
+                }
+            }
+            
+            if (winning_msg != nil and max_bid >= reserve_price) {
+                do accept_proposal message: winning_msg contents: ["accept", item_name, max_bid];
+                total_revenue <- total_revenue + max_bid;
+                write "Sealed Auction Won by " + agent(winning_msg.sender).name + " for " + max_bid;
+                
+                // Reject others
+                loop p over: proposes {
+                    if (p != winning_msg) {
+                        do reject_proposal message: p contents: ["reject", item_name];
+                    }
+                }
+            } else {
+                write "Highest bid (" + max_bid + ") was below reserve (" + reserve_price + "). Cancelled.";
+                 loop p over: proposes {
+                    do reject_proposal message: p contents: ["reject", "Reserve not met"];
+                }
+            }
+            active <- false;
+        }
+    }
+
+    aspect default {
+        draw square(5) color: active ? #red : #gray;
+        draw auction_type color: #black size: 8 at: location + {0, -5};
+    }
+}
+
+experiment AuctionExperiment type: gui {
+    // Allow user to select auction type
+    parameter "Auction Type" var: auction_type category: "Settings";
+    parameter "Number of Bidders" var: nb_bidders category: "Settings";
+
+    output {
+        display map type: opengl {
+            species Bidder;
+            species Auctioneer;
+        }
+        
+        // Challenge 2 Requirement: Compare values
+        display "Auction Stats" {
+            chart "Results" type: series {
+                data "Auctioneer Revenue" value: total_revenue color: #red;
+                data "Total Bidder Gain (Surplus)" value: total_bidder_gain color: #blue;
+            }
+        }
+    }
+}
